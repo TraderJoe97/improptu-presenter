@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Image from 'next/image';
-import { generatePresentationImages, GeneratePresentationImagesOutput } from '@/ai/flows/generate-presentation-images';
-import { providePresentationFeedback, ProvidePresentationFeedbackOutput } from '@/ai/flows/provide-presentation-feedback';
+import { generatePresentationImages } from '@/ai/flows/generate-presentation-images';
+import type { ProvidePresentationFeedbackOutput } from '@/ai/flows/provide-presentation-feedback';
+import { providePresentationFeedback } from '@/ai/flows/provide-presentation-feedback';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,7 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, AlertCircle, Mic, StopCircle, Lightbulb, Clock, Target, Award, Play, RotateCcw, Eye } from 'lucide-react';
+import { Loader2, AlertCircle, Mic, StopCircle, Lightbulb, Clock, Target, Award, Play, RotateCcw, Eye, MicOff } from 'lucide-react';
 
 type AppStage = "idle" | "generatingImages" | "countdown" | "slideshow" | "fetchingFeedback" | "showFeedback";
 
@@ -27,6 +28,7 @@ export default function ImpromptuPresenterPage() {
   const [stage, setStage] = useState<AppStage>("idle");
   const [error, setError] = useState<string | null>(null);
   const [slideProgress, setSlideProgress] = useState(0);
+  const [audioUnavailable, setAudioUnavailable] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -44,6 +46,7 @@ export default function ImpromptuPresenterPage() {
     setFeedback(null);
     setError(null);
     setStage("idle");
+    setAudioUnavailable(false);
     audioChunksRef.current = [];
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       mediaRecorderRef.current.stop();
@@ -61,6 +64,7 @@ export default function ImpromptuPresenterPage() {
       return;
     }
     setError(null);
+    setAudioUnavailable(false); // Reset audio unavailability status
     setStage("generatingImages");
     try {
       const result = await generatePresentationImages({ topic });
@@ -79,8 +83,13 @@ export default function ImpromptuPresenterPage() {
     }
   };
 
-  const startRecording = async () => {
+  const startRecording = async (): Promise<boolean> => {
     audioChunksRef.current = [];
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+        mediaRecorderRef.current.stop();
+    }
+    mediaRecorderRef.current = null;
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorderRef.current = new MediaRecorder(stream);
@@ -89,74 +98,111 @@ export default function ImpromptuPresenterPage() {
           audioChunksRef.current.push(event.data);
         }
       };
+      mediaRecorderRef.current.onstop = () => { // Basic cleanup
+        stream.getTracks().forEach(track => track.stop());
+      };
       mediaRecorderRef.current.start();
+      return true;
     } catch (err) {
       console.error("Microphone access error:", err);
-      const errorMessage = err instanceof Error && err.name === "NotAllowedError"
-        ? "Microphone permission denied. Please allow microphone access to record audio."
-        : "Could not access microphone.";
-      setError(errorMessage);
-      setStage("idle"); // Go back to allow user to retry or fix permissions
-      toast({ title: "Error", description: errorMessage, variant: "destructive" });
-      throw new Error(errorMessage); // Propagate error to stop slideshow start
+      const toastMessage = err instanceof Error && err.name === "NotAllowedError"
+        ? "Microphone permission denied. Proceeding without audio recording for feedback."
+        : "Could not access microphone. Proceeding without audio recording for feedback.";
+      toast({
+        title: "Microphone Unavailable",
+        description: toastMessage,
+        variant: "default"
+      });
+      return false;
     }
   };
 
   const stopRecordingAndGetFeedback = async () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      mediaRecorderRef.current.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        if (audioBlob.size === 0) {
-          setError("No audio was recorded. Cannot provide feedback.");
-          setStage("showFeedback"); // Still go to feedback stage, but with an error message
-          toast({ title: "Warning", description: "No audio recorded. Feedback might be limited.", variant: "default" });
-          setFeedback({ // Provide empty feedback structure
-            clarityFeedback: "N/A (no audio recorded)",
-            pacingFeedback: "N/A (no audio recorded)",
-            contentRelevanceFeedback: "N/A (no audio recorded)",
-            overallFeedback: "N/A (no audio recorded)",
-          });
-          return;
-        }
-
-        const reader = new FileReader();
-        reader.readAsDataURL(audioBlob);
-        reader.onloadend = async () => {
-          const base64Audio = reader.result as string;
-          setStage("fetchingFeedback");
-          try {
-            const feedbackResult = await providePresentationFeedback({ audioDataUri: base64Audio, topic });
-            setFeedback(feedbackResult);
-          } catch (err) {
-            console.error("Feedback generation error:", err);
-            const errorMessage = err instanceof Error ? err.message : "An unknown error occurred during feedback generation.";
-            setError(`Failed to get feedback: ${errorMessage}`);
-            toast({ title: "Error", description: `Feedback generation failed: ${errorMessage}`, variant: "destructive" });
-             // Provide empty feedback structure on error
-            setFeedback({
-                clarityFeedback: "Error fetching feedback.",
-                pacingFeedback: "Error fetching feedback.",
-                contentRelevanceFeedback: "Error fetching feedback.",
-                overallFeedback: "Error fetching feedback.",
-            });
-          } finally {
-            setStage("showFeedback");
-          }
-        };
-        // Clean up media stream tracks
-        mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop());
-      };
-      mediaRecorderRef.current.stop();
-    } else {
-       setError("Recording was not active or failed to initialize.");
-       setStage("showFeedback"); 
-       setFeedback({ // Provide empty feedback structure
-            clarityFeedback: "N/A (recording issue)",
-            pacingFeedback: "N/A (recording issue)",
-            contentRelevanceFeedback: "N/A (recording issue)",
-            overallFeedback: "N/A (recording issue)",
-        });
+    if (audioUnavailable) {
+      toast({
+        title: "No Audio Input",
+        description: "Microphone was unavailable or permission denied. Presentation feedback is skipped.",
+        variant: "default",
+      });
+      setFeedback({
+        clarityFeedback: "N/A (microphone unavailable or permission denied)",
+        pacingFeedback: "N/A (microphone unavailable or permission denied)",
+        contentRelevanceFeedback: "N/A (microphone unavailable or permission denied)",
+        overallFeedback: "Presentation completed. Audio feedback skipped as microphone was not available or permission was denied.",
+      });
+      setStage("showFeedback");
+      return;
     }
+
+    if (!mediaRecorderRef.current || mediaRecorderRef.current.state !== "recording") {
+      toast({
+        title: "Recording Issue",
+        description: "Audio recording was not active or properly initialized. Feedback skipped.",
+        variant: "default"
+      });
+      setFeedback({
+        clarityFeedback: "N/A (recording issue)",
+        pacingFeedback: "N/A (recording issue)",
+        contentRelevanceFeedback: "N/A (recording issue)",
+        overallFeedback: "Presentation completed. Feedback skipped due to a recording issue.",
+      });
+      setStage("showFeedback");
+      return;
+    }
+    
+    setStage("fetchingFeedback");
+    mediaRecorderRef.current.onstop = async () => {
+      const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      
+      if (audioBlob.size === 0) {
+        toast({ title: "Warning", description: "No audio was captured during recording. Feedback may be limited or unavailable.", variant: "default" });
+        setFeedback({
+          clarityFeedback: "N/A (no audio captured)",
+          pacingFeedback: "N/A (no audio captured)",
+          contentRelevanceFeedback: "N/A (no audio captured)",
+          overallFeedback: "No audio was captured during the recording.",
+        });
+        setStage("showFeedback");
+        mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.readAsDataURL(audioBlob);
+      reader.onloadend = async () => {
+        const base64Audio = reader.result as string;
+        try {
+          const feedbackResult = await providePresentationFeedback({ audioDataUri: base64Audio, topic });
+          setFeedback(feedbackResult);
+        } catch (err) {
+          console.error("Feedback generation error:", err);
+          const errorMessage = err instanceof Error ? err.message : "An unknown error occurred during feedback generation.";
+          toast({ title: "Error", description: `Feedback generation failed: ${errorMessage}`, variant: "destructive" });
+          setFeedback({
+              clarityFeedback: "Error fetching feedback.",
+              pacingFeedback: "Error fetching feedback.",
+              contentRelevanceFeedback: "Error fetching feedback.",
+              overallFeedback: "Error fetching feedback.",
+          });
+        } finally {
+          setStage("showFeedback");
+        }
+      };
+      reader.onerror = () => {
+        console.error("FileReader error");
+        toast({ title: "Error", description: "Failed to process recorded audio.", variant: "destructive" });
+        setFeedback({
+            clarityFeedback: "Error processing audio.",
+            pacingFeedback: "Error processing audio.",
+            contentRelevanceFeedback: "Error processing audio.",
+            overallFeedback: "Error processing audio.",
+        });
+        setStage("showFeedback");
+      };
+      // Clean up media stream tracks associated with this specific recorder instance
+      mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop());
+    };
+    mediaRecorderRef.current.stop();
   };
 
   useEffect(() => {
@@ -164,13 +210,11 @@ export default function ImpromptuPresenterPage() {
       countdownTimerRef.current = setTimeout(() => setCountdownValue(countdownValue - 1), 1000);
     } else if (stage === "countdown" && countdownValue === 0) {
       (async () => {
-        try {
-          await startRecording();
-          setStage("slideshow");
-          setCurrentSlideIndex(0); // Start with the first slide
-        } catch (e) {
-          // Error handled in startRecording, stage is reset
-        }
+        setError(null); 
+        const recordingSuccessfullyInitiated = await startRecording();
+        setAudioUnavailable(!recordingSuccessfullyInitiated);
+        setStage("slideshow");
+        setCurrentSlideIndex(0);
       })();
     }
     return () => { if (countdownTimerRef.current) clearTimeout(countdownTimerRef.current); };
@@ -178,9 +222,8 @@ export default function ImpromptuPresenterPage() {
 
   useEffect(() => {
     if (stage === "slideshow") {
-      setSlideProgress(0); // Reset progress for new slide
+      setSlideProgress(0); 
       
-      // Animate progress bar
       let progressIntervalStart = Date.now();
       if(slideProgressTimerRef.current) clearInterval(slideProgressTimerRef.current);
       slideProgressTimerRef.current = setInterval(() => {
@@ -191,7 +234,6 @@ export default function ImpromptuPresenterPage() {
           if(slideProgressTimerRef.current) clearInterval(slideProgressTimerRef.current);
         }
       }, 100);
-
 
       if (slideshowTimerRef.current) clearTimeout(slideshowTimerRef.current);
       slideshowTimerRef.current = setTimeout(() => {
@@ -206,7 +248,7 @@ export default function ImpromptuPresenterPage() {
       if (slideshowTimerRef.current) clearTimeout(slideshowTimerRef.current);
       if (slideProgressTimerRef.current) clearInterval(slideProgressTimerRef.current);
     };
-  }, [stage, currentSlideIndex, images.length]);
+  }, [stage, currentSlideIndex, images.length, audioUnavailable]); // Added audioUnavailable in case stopRecordingAndGetFeedback behavior changes based on it
 
 
   const renderContent = () => {
@@ -252,7 +294,7 @@ export default function ImpromptuPresenterPage() {
             <p className="text-muted-foreground text-2xl">Get Ready!</p>
             <p className="text-9xl font-bold text-primary">{countdownValue}</p>
             <Mic className="h-10 w-10 text-primary animate-pulse"/>
-            <p className="text-muted-foreground">Microphone will start recording.</p>
+            <p className="text-muted-foreground">Microphone will attempt to start recording.</p>
           </div>
         );
       case "slideshow":
@@ -273,14 +315,23 @@ export default function ImpromptuPresenterPage() {
                   objectFit="contain"
                   priority={currentSlideIndex === 0}
                   className="transition-opacity duration-500 ease-in-out opacity-100"
+                  data-ai-hint="presentation slide"
                 />
               )}
             </CardContent>
             <div className="p-2 bg-muted/50">
               <Progress value={slideProgress} className="w-full h-2 [&>div]:bg-accent" />
             </div>
-             <div className="p-4 flex items-center justify-center text-muted-foreground">
-                <Mic className="h-5 w-5 mr-2 text-red-500 animate-pulse" /> Recording in progress...
+            <div className="p-4 flex items-center justify-center text-muted-foreground">
+              { !audioUnavailable ? (
+                <>
+                  <Mic className="h-5 w-5 mr-2 text-red-500 animate-pulse" /> Recording in progress...
+                </>
+              ) : (
+                <>
+                  <MicOff className="h-5 w-5 mr-2" /> Microphone unavailable. No audio recording.
+                </>
+              )}
             </div>
           </Card>
         );
