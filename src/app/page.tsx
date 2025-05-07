@@ -16,7 +16,7 @@ import { Loader2, AlertCircle, Mic, StopCircle, Lightbulb, Clock, Target, Award,
 
 type AppStage = "idle" | "generatingImages" | "countdown" | "slideshow" | "fetchingFeedback" | "showFeedback";
 
-const SLIDE_DURATION_MS = 3000;
+const SLIDE_DURATION_MS = 30000; // 30 seconds
 const COUNTDOWN_START = 3;
 
 export default function ImpromptuPresenterPage() {
@@ -248,7 +248,7 @@ export default function ImpromptuPresenterPage() {
       if (slideshowTimerRef.current) clearTimeout(slideshowTimerRef.current);
       if (slideProgressTimerRef.current) clearInterval(slideProgressTimerRef.current);
     };
-  }, [stage, currentSlideIndex, images.length, audioUnavailable]); // Added audioUnavailable in case stopRecordingAndGetFeedback behavior changes based on it
+  }, [stage, currentSlideIndex, images.length, audioUnavailable, stopRecordingAndGetFeedback]); 
 
 
   const renderContent = () => {
@@ -425,3 +425,4 @@ function FeedbackItem({ icon, title, content }: FeedbackItemProps) {
     </Card>
   );
 }
+
