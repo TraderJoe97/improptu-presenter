@@ -16,7 +16,7 @@ import { Loader2, AlertCircle, Mic, StopCircle, Lightbulb, Clock, Target, Award,
 
 type AppStage = "idle" | "generatingImages" | "countdown" | "slideshow" | "fetchingFeedback" | "showFeedback";
 
-const SLIDE_DURATION_MS = 30000; // 30 seconds
+const SLIDE_DURATION_MS = 15000; // 15 seconds
 const COUNTDOWN_START = 3;
 
 export default function ImpromptuPresenterPage() {
